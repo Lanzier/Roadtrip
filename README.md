@@ -7,7 +7,6 @@
 4. Build and deployment 选择 `Deploy from a branch`
 5. Branch 选择 `main`，文件夹选择 `/ (root)`，保存
 6. 稍等 1–3 分钟后，用 GitHub Pages 给出的 HTTPS 地址在 iPhone Safari 打开
-7. 网页地址：https://lanzier.github.io/Roadtrip/
 
 ## iPhone 安装
 Safari → 分享 → 添加到主屏幕
