@@ -39,4 +39,5 @@ publishable key 与 `tripId` 在网页里是公开的，拿到网页地址的人
 - `cloud-config.js` Supabase URL + publishable key + tripId
 - `config.js` 高德 Key / securityJsCode
 - `sw.js` Service Worker（离线缓存，网络优先）；`manifest.webmanifest` PWA 清单
+- `icons/` PWA 图标（192 / 512 / apple-touch 180，与 manifest 及 HTML 路径一致）
 - `supabase-setup.sql` 早期“登录制”方案留档（当前未使用）

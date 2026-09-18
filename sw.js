@@ -1,13 +1,13 @@
-const CACHE = 'model3-roadtrip-pwa-v12';
+const CACHE = 'model3-roadtrip-pwa-v13';
 const CORE = [
   './',
   './index.html',
   './manifest.webmanifest',
   './config.js',
   './cloud-config.js',
-  './icon-192.png',
-  './icon-512.png',
-  './apple-touch-icon.png'
+  './icons/icon-192.png',
+  './icons/icon-512.png',
+  './icons/apple-touch-icon.png'
 ];
 
 self.addEventListener('install', event => {
