@@ -1,47 +1,42 @@
-# Model 3 自驾助手 PWA
+# 义乌 → 深圳 Model 3 自驾助手（PWA）
 
-## GitHub Pages 部署
-1. 在 GitHub 新建一个 Public 仓库，例如 `model3-roadtrip`
-2. 把本文件夹里的所有文件上传到仓库根目录
-3. GitHub 仓库进入 Settings → Pages
-4. Build and deployment 选择 `Deploy from a branch`
-5. Branch 选择 `main`，文件夹选择 `/ (root)`，保存
-6. 稍等 1–3 分钟后，用 GitHub Pages 给出的 HTTPS 地址在 iPhone Safari 打开
+手机/电脑通用的一页式行程助手：行程目标编辑、高德地图定位与导航、到站记录、云端自动同步。
+线上地址：https://lanzier.github.io/Roadtrip/
 
-## iPhone 安装
-Safari → 分享 → 添加到主屏幕
+## 部署（GitHub Pages）
+1. 仓库 Settings → Pages → Deploy from a branch → `main` / `(root)`
+2. 打开 https://lanzier.github.io/Roadtrip/ 即可使用
+3. iPhone：Safari → 分享 → 添加到主屏幕（可离线打开）
 
 ## 高德地图
-在 App 内“高德设置”填写 Web端(JS API) Key 与 securityJsCode。
-GitHub Pages 是 HTTPS，因此实时 GPS 定位权限可以正常请求。
+Key 与 securityJsCode 已内置在 `config.js`（控制台里把域名白名单限制为 `lanzier.github.io`）。
+不配置地图也能用每个目标里的“一键高德导航 / 高德搜索”。
 
+## 云端同步（v12，当前生效）
 
-## 云端同步（v8）
+免登录自动同步，改完就上云，手机/电脑互见。
 
-本版本加入 Supabase 云同步：
-- 同一邮箱登录后，多设备读取同一份行程。
-- 本地仍保留 localStorage 缓存，离线可继续使用。
-- 修改后约 0.9 秒自动推送云端。
-- 页面重新打开 / 回到前台会自动拉取云端较新的版本。
-- 冲突时以 `updatedAt` 较新的行程为准。
+- 存储：Supabase 表 `roadtrip_shared_state`（`trip_id` 主键 + `state` jsonb + `updated_at`），前端用 publishable(anon) key 直连 REST API，不加载外部 JS 库。
+- 触发：任意改动（目标名称 / 类型 / 计划时间 / 备注 / 位置 / 到达状态 / 增删排序）→ 本地立即保存 → 约 0.7 秒后自动上传。
+- 拉取：本机每 10 秒轮询一次；页面回到前台、重新打开、网络恢复时立即拉取。
+- 冲突：以云端 `updated_at`（服务器时间）判断是否存在新版本；本机有未上传改动时，只有在云端版本更新的情况下才被覆盖，避免把另一台设备刚改的内容冲掉。
+- 界面显示“已从云端更新 · 来自手机/电脑 · 时间”，方便确认同步对象。
+- 行程数据同时保留在本机 `localStorage`，离线可继续用；右下角“备份行程”可随时导出 JSON。
 
-启用步骤：
-1. 创建 Supabase 项目。
-2. 在 SQL Editor 执行 `supabase-setup.sql`。
-3. 把 Project URL 与 Publishable Key 填入 `cloud-config.js`。
-4. 在 Supabase Auth URL Configuration 中，把 GitHub Pages 地址加入 Site URL / Redirect URLs。
-5. 上传更新后的文件到 GitHub Pages。
+### 已实测
+Playwright 双端实测（2026-09-18）：PC 改备注 → 手机端约 5 秒后自动出现；手机改计划时间 → PC 约 7.5 秒后自动出现；无 JS 报错。
 
+### 换新行程 / 重置
+- 新行程需要一个新的 `tripId`（UUID）写进 `cloud-config.js`；
+- 当前 RLS 策略只放行现有 `trip_id` 的匿名读写（其他 trip_id 写入会被拒：`new row violates row-level security policy`）。换新行程时需在 Supabase SQL Editor 为新 `trip_id` 补一条同样的策略，然后重新上传 `cloud-config.js`。
+- 想把行程恢复成默认 12 个节点：清掉本机 localStorage（或换一台干净设备打开页面）后点“立即同步”。
 
-## v9 已绑定 Supabase 项目
+### 安全说明
+publishable key 与 `tripId` 在网页里是公开的，拿到网页地址的人可以读写这一条行程记录（只影响这张表、这一条 trip_id）。行程内容不算敏感信息；如后续要放隐私内容，再改成“登录 + RLS 按用户隔离”。
 
-`cloud-config.js` 已填入当前项目的 Project URL 与 Publishable Key。
-
-还需要在 Supabase 控制台完成一次：
-1. SQL Editor 执行 `supabase-setup.sql`
-2. Authentication → URL Configuration
-3. Site URL 填你的 GitHub Pages 站点
-4. Redirect URLs 加入同一个 GitHub Pages 地址（建议同时加入带 / 与不带 / 的版本）
-5. Authentication → Providers → Email 保持启用
-
-完成后，多设备使用同一邮箱的 Magic Link 登录即可同步。
+## 文件
+- `index.html` 主页面（行程编辑 / 地图 / 云同步逻辑）
+- `cloud-config.js` Supabase URL + publishable key + tripId
+- `config.js` 高德 Key / securityJsCode
+- `sw.js` Service Worker（离线缓存，网络优先）；`manifest.webmanifest` PWA 清单
+- `supabase-setup.sql` 早期“登录制”方案留档（当前未使用）
