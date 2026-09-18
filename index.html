@@ -73,7 +73,7 @@
 <section class="section">
   <div class="section-title"><h2>云端同步</h2><span id="cloudStatus">初始化中…</span></div>
   <div class="map-card" style="padding:12px">
-    <div class="sub" id="cloudHint">无需邮箱登录。现在直接调用 Supabase REST API，不依赖外部 JS 库；修改后自动上传，其他设备每 15 秒检查更新。</div>
+    <div class="sub" id="cloudHint">无需邮箱登录。任何改动（目标名称/时间/备注/位置/到达状态/增删排序）都会自动上传到云端；其他设备每 10 秒自动拉取，回到前台或重新打开也会立即拉取。两台设备同时改动时以云端较新的版本为准。</div>
     <div class="edit-actions">
       <button class="btn primary" id="cloudSyncBtn" type="button">立即同步</button>
     </div>
@@ -105,10 +105,15 @@ const defaultStops=[
 {name:'深圳｜最终目的地待填',type:'终点',plan:'10/2 目标 18:00–19:00',lon:114.058,lat:22.543,note:'酒店/最终地址确定后改成准确位置。',approx:true}
 ];
 let state={current:-1,selected:3,times:{},stops:defaultStops,updatedAt:Date.now()};try{const s=JSON.parse(localStorage.getItem(STORE));if(s&&Array.isArray(s.stops))state=s}catch(e){}if(!state.updatedAt)state.updatedAt=Date.now();
-let map=null,A=null,currentMarker=null,targetMarkers=[],driving=null,watchId=null,currentPos=null,picking=false,amapSdkLoading=false,amapInitialized=false,poiBusy=false,geocoder=null,lastAreaName='',lastGeoLookupAt=0,lastGeoLookupPos=null,cloudReady=false,cloudSaveTimer=null,cloudApplying=false,cloudPollTimer=null;
+let map=null,A=null,currentMarker=null,targetMarkers=[],driving=null,watchId=null,currentPos=null,picking=false,amapSdkLoading=false,amapInitialized=false,poiBusy=false,geocoder=null,lastAreaName='',lastGeoLookupAt=0,lastGeoLookupPos=null,cloudReady=false,cloudSaveTimer=null,cloudApplying=false,cloudPollTimer=null,lastServerTs=null,dirty=false;
 const timeline=document.getElementById('timeline'),gpsText=document.getElementById('gpsText'),progressText=document.getElementById('progressText'),progressBar=document.getElementById('progressBar'),mapStatus=document.getElementById('mapStatus'),liveStatus=document.getElementById('liveStatus'),targetStatus=document.getElementById('targetStatus'),mapPlaceholder=document.getElementById('mapPlaceholder'),searchBox=document.getElementById('searchBox'),poiResults=document.getElementById('poiResults'),cloudStatus=document.getElementById('cloudStatus'),cloudUserText=document.getElementById('cloudUserText');
+function deviceLabel(){const ua=navigator.userAgent||"";if(/iphone|ipad|ipod|android|mobile/i.test(ua))return "手机";if(/windows|macintosh|linux/i.test(ua))return "电脑";return "设备"}
+function fmtClock(ts){if(!ts)return "";return new Date(ts).toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false})}
 function save(){
   state.updatedAt=Date.now();
+  state.editedAt=state.updatedAt;
+  state.lastEditor=deviceLabel();
+  dirty=true;
   localStorage.setItem(STORE,JSON.stringify(state));
   if(!cloudApplying)scheduleCloudSave();
 }
@@ -168,18 +173,23 @@ async function pushCloudState(showMessage=true){
   try{
     cloudStatus.textContent='同步中…';
     const payload={...state,updatedAt:Number(state.updatedAt||Date.now())};
-    const qs='roadtrip_shared_state?on_conflict=trip_id';
-    await cloudRequest(qs,{
-      method:'POST',
-      headers:cloudHeaders({'Prefer':'resolution=merge-duplicates,return=minimal'}),
-      body:JSON.stringify([{
-        trip_id:cfg.tripId,
-        state:payload,
-        updated_at:new Date(payload.updatedAt).toISOString()
-      }])
-    });
+    const rows=await cloudRequest(
+      'roadtrip_shared_state?on_conflict=trip_id&select=updated_at',
+      {
+        method:'POST',
+        headers:cloudHeaders({'Prefer':'resolution=merge-duplicates,return=representation'}),
+        body:JSON.stringify([{
+          trip_id:cfg.tripId,
+          state:payload,
+          updated_at:new Date().toISOString()
+        }])
+      }
+    );
+    const serverRow=Array.isArray(rows)&&rows.length?rows[0]:null;
+    if(serverRow&&serverRow.updated_at)lastServerTs=Date.parse(serverRow.updated_at)||null;
+    dirty=false;
     cloudStatus.textContent='已同步';
-    setCloudText('自动同步已开启 · 最近上传 '+new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}));
+    setCloudText('自动同步已开启 · 本机已上传 '+fmtClock(payload.updatedAt));
     if(showMessage)alert('已同步到云端。');
   }catch(e){
     cloudStatus.textContent='同步失败';
@@ -208,20 +218,25 @@ async function pullCloudState(showMessage=false){
       return;
     }
     const remote=row.state;
-    const remoteTs=Number(remote.updatedAt||Date.parse(row.updated_at)||0);
+    const serverTs=Date.parse(row.updated_at)||0;
+    const remoteTs=Number(remote.updatedAt||serverTs||0);
     const localTs=Number(state.updatedAt||0);
-    if(remoteTs>localTs){
+    const remoteIsNew=lastServerTs===null||serverTs>lastServerTs;
+    if(remoteIsNew&&(!dirty||remoteTs>localTs)){
       cloudApplying=true;
       state=remote;
       localStorage.setItem(STORE,JSON.stringify(state));
       cloudApplying=false;
+      dirty=false;
+      lastServerTs=serverTs||Date.now();
       render();
       focusTarget();
       cloudStatus.textContent='已更新';
-      setCloudText('已从云端更新 · '+new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}));
-    }else if(localTs>remoteTs){
+      setCloudText('已从云端更新 · 来自'+String(remote.lastEditor||'其他设备')+' · '+fmtClock(serverTs||remoteTs));
+    }else if(dirty||localTs>remoteTs){
       await pushCloudState(false);
     }else{
+      lastServerTs=serverTs||lastServerTs;
       cloudStatus.textContent='已同步';
       setCloudText('自动同步已开启 · 当前已是最新');
     }
@@ -245,7 +260,7 @@ async function initCloud(){
   setCloudText('无需登录，正在读取云端行程…');
   await pullCloudState(false);
   clearInterval(cloudPollTimer);
-  cloudPollTimer=setInterval(()=>pullCloudState(false),15000);
+  cloudPollTimer=setInterval(()=>{if(!document.hidden)pullCloudState(false)},10000);
 }
 function esc(s=''){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}function stamp(){return new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false})}function validCoord(s){const lon=Number(s.lon),lat=Number(s.lat);return Number.isFinite(lon)&&Number.isFinite(lat)&&lon>=70&&lon<=140&&lat>=0&&lat<=60}function selectedStop(){return state.stops[state.selected]||null}
 function render(){timeline.innerHTML='';state.stops.forEach((s,i)=>{const el=document.createElement('article');el.className='stop'+(state.times[i]&&i!==state.current?' done':'')+(state.times[i]&&i===state.current?' now':'');el.dataset.i=i;const exact=validCoord(s);el.innerHTML=`<div class="stop-top"><span class="dot"></span><div class="stop-main"><div class="name-row"><div class="name">${esc(s.name)}</div><div class="time">${esc(s.plan||'')}</div></div><div class="sub"><span class="pill">${esc(s.type||'目标')}</span>${exact?' · '+Number(s.lon).toFixed(5)+', '+Number(s.lat).toFixed(5):' · 位置待设置'}${s.approx?' · 城市中心约点':''}</div>${s.note?`<div class="sub">${esc(s.note)}</div>`:''}${state.times[i]?`<div class="actual">实际到达：${esc(state.times[i])}</div>`:''}</div></div><div class="card-actions"><button class="btn select" type="button">设为目标</button><button class="btn editBtn" type="button">编辑</button><button class="btn navBtn" type="button">一键高德</button><button class="btn searchBtn" type="button">高德搜索</button><button class="btn markBtn" type="button">${state.times[i]?'取消到达':'我到这了'}</button><button class="btn moreBtn" type="button">↑↓ 删除</button></div><div class="edit"><div class="form-grid"><div class="field full"><label>目标名称</label><input class="f-name" value="${esc(s.name)}"></div><div class="field"><label>类型</label><input class="f-type" value="${esc(s.type||'')}"></div><div class="field"><label>计划时间</label><input class="f-plan" value="${esc(s.plan||'')}"></div><div class="field full"><label>地点定位</label><div class="sub">不用填经纬度。点下面“高德搜索选地点”，搜索酒店/夜宵/充电站后直接选择。</div></div><div class="field full"><label>备注</label><textarea class="f-note">${esc(s.note||'')}</textarea></div></div><div class="edit-actions"><button class="btn primary saveEdit" type="button">保存修改</button><button class="btn amapPoiBtn" type="button">高德搜索选地点</button><button class="btn useMapPick" type="button">在地图上点位置</button><button class="btn danger clearLocationBtn" type="button">清除此地点位置</button><button class="btn upBtn" type="button">上移</button><button class="btn downBtn" type="button">下移</button><button class="btn danger deleteBtn" type="button">删除此目标</button><button class="btn cancelEdit" type="button">收起</button></div></div>`;timeline.appendChild(el);el.querySelector('.select').addEventListener('click',()=>{state.selected=i;save();render();focusTarget()});el.querySelector('.editBtn').addEventListener('click',()=>el.classList.toggle('editing'));el.querySelector('.cancelEdit').addEventListener('click',()=>el.classList.remove('editing'));el.querySelector('.navBtn').addEventListener('click',()=>openNav(i));el.querySelector('.searchBtn').addEventListener('click',()=>openAmapSearch(i));el.querySelector('.markBtn').addEventListener('click',()=>{if(state.times[i])unmarkHere(i);else markHere(i)});el.querySelector('.moreBtn').addEventListener('click',()=>el.classList.add('editing'));el.querySelector('.amapPoiBtn').addEventListener('click',()=>searchPlaceForStop(i));el.querySelector('.useMapPick').addEventListener('click',()=>beginPick(i));el.querySelector('.clearLocationBtn').addEventListener('click',()=>clearLocation(i));el.querySelector('.saveEdit').addEventListener('click',()=>saveEdit(el,i));el.querySelector('.upBtn').addEventListener('click',()=>move(i,-1));el.querySelector('.downBtn').addEventListener('click',()=>move(i,1));el.querySelector('.deleteBtn').addEventListener('click',()=>removeStop(i))});const done=Object.keys(state.times).length,pct=state.stops.length?Math.round(done/state.stops.length*100):0;progressText.textContent=pct+'%';progressBar.style.width=pct+'%';const s=selectedStop();targetStatus.textContent='🎯 当前目标：'+(s?s.name:'未选择');document.getElementById('currentNavBtn').disabled=!s;refreshMarkers()}
