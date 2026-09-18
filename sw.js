@@ -1,4 +1,4 @@
-const CACHE = 'model3-roadtrip-pwa-v1';
+const CACHE = 'model3-roadtrip-pwa-v2';
 const CORE = [
   './',
   './index.html',
