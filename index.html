@@ -71,18 +71,13 @@
 </section>
 
 <section class="section">
-  <div class="section-title"><h2>云端同步</h2><span id="cloudStatus">未配置</span></div>
+  <div class="section-title"><h2>云端同步</h2><span id="cloudStatus">初始化中…</span></div>
   <div class="map-card" style="padding:12px">
-    <div class="sub" id="cloudHint">使用同一个邮箱登录后，iPhone、安卓和电脑会同步同一份行程。离线时仍会保存在本机，恢复网络后再同步。</div>
-    <div class="form-grid" style="margin-top:10px">
-      <div class="field full"><label>登录邮箱</label><input id="cloudEmail" type="email" autocomplete="email" placeholder="你的邮箱"></div>
-    </div>
+    <div class="sub" id="cloudHint">无需邮箱登录。修改行程后会自动上传；其他设备打开同一个网址后会自动读取，并每 15 秒检查一次更新。</div>
     <div class="edit-actions">
-      <button class="btn primary" id="cloudLoginBtn" type="button">发送登录链接</button>
-      <button class="btn" id="cloudSyncBtn" type="button">立即同步</button>
-      <button class="btn danger" id="cloudLogoutBtn" type="button">退出云同步</button>
+      <button class="btn primary" id="cloudSyncBtn" type="button">立即同步</button>
     </div>
-    <div class="sub" id="cloudUserText" style="margin-top:9px"></div>
+    <div class="sub" id="cloudUserText" style="margin-top:9px">正在连接云端…</div>
   </div>
 </section>
 
@@ -95,7 +90,7 @@
 <script src="./cloud-config.js"></script>
 <script>
 (()=>{
-const STORE='roadtrip-yw-sz-2026-v2',AMAP_STORE='roadtrip-amap-config-v1',CLOUD_TABLE='roadtrip_state';
+const STORE='roadtrip-yw-sz-2026-v2',AMAP_STORE='roadtrip-amap-config-v1',CLOUD_TABLE='roadtrip_shared_state';
 const defaultStops=[
 {name:'义乌｜出发',type:'出发',plan:'9/30 19:00',lon:120.075,lat:29.306,note:'建议高电量出发；车机导航优先。',approx:true},
 {name:'途中补电｜温州方向',type:'充电',plan:'9/30 晚',lon:'',lat:'',note:'按 Tesla 车机实时推荐空闲充电站，不锁死某个桩。'},
@@ -111,45 +106,54 @@ const defaultStops=[
 {name:'深圳｜最终目的地待填',type:'终点',plan:'10/2 目标 18:00–19:00',lon:114.058,lat:22.543,note:'酒店/最终地址确定后改成准确位置。',approx:true}
 ];
 let state={current:-1,selected:3,times:{},stops:defaultStops,updatedAt:Date.now()};try{const s=JSON.parse(localStorage.getItem(STORE));if(s&&Array.isArray(s.stops))state=s}catch(e){}if(!state.updatedAt)state.updatedAt=Date.now();
-let map=null,A=null,currentMarker=null,targetMarkers=[],driving=null,watchId=null,currentPos=null,picking=false,amapSdkLoading=false,amapInitialized=false,poiBusy=false,geocoder=null,lastAreaName='',lastGeoLookupAt=0,lastGeoLookupPos=null,cloud=null,cloudUser=null,cloudSaveTimer=null,cloudApplying=false;
+let map=null,A=null,currentMarker=null,targetMarkers=[],driving=null,watchId=null,currentPos=null,picking=false,amapSdkLoading=false,amapInitialized=false,poiBusy=false,geocoder=null,lastAreaName='',lastGeoLookupAt=0,lastGeoLookupPos=null,cloud=null,cloudReady=false,cloudSaveTimer=null,cloudApplying=false,cloudPollTimer=null;
 const timeline=document.getElementById('timeline'),gpsText=document.getElementById('gpsText'),progressText=document.getElementById('progressText'),progressBar=document.getElementById('progressBar'),mapStatus=document.getElementById('mapStatus'),liveStatus=document.getElementById('liveStatus'),targetStatus=document.getElementById('targetStatus'),mapPlaceholder=document.getElementById('mapPlaceholder'),searchBox=document.getElementById('searchBox'),poiResults=document.getElementById('poiResults'),cloudStatus=document.getElementById('cloudStatus'),cloudUserText=document.getElementById('cloudUserText');
 function save(){
   state.updatedAt=Date.now();
   localStorage.setItem(STORE,JSON.stringify(state));
   if(!cloudApplying)scheduleCloudSave();
 }
+function setCloudText(text,status){
+  if(status)cloudStatus.textContent=status;
+  cloudUserText.textContent=text;
+}
 function scheduleCloudSave(){
-  if(!cloud||!cloudUser)return;
+  if(!cloud||!cloudReady)return;
   clearTimeout(cloudSaveTimer);
-  cloudSaveTimer=setTimeout(()=>pushCloudState(false),900);
+  cloudSaveTimer=setTimeout(()=>pushCloudState(false),700);
 }
 async function pushCloudState(showMessage=true){
-  if(!cloud||!cloudUser){if(showMessage)alert('请先登录云同步。');return}
+  const cfg=window.ROADTRIP_CLOUD_CONFIG||{};
+  if(!cloud||!cloudReady||!cfg.tripId){
+    if(showMessage)alert('云同步还没有准备好。');
+    return;
+  }
   try{
     cloudStatus.textContent='同步中…';
     const payload={...state,updatedAt:Number(state.updatedAt||Date.now())};
     const {error}=await cloud.from(CLOUD_TABLE).upsert({
-      user_id:cloudUser.id,
+      trip_id:cfg.tripId,
       state:payload,
       updated_at:new Date(payload.updatedAt).toISOString()
-    },{onConflict:'user_id'});
+    },{onConflict:'trip_id'});
     if(error)throw error;
     cloudStatus.textContent='已同步';
-    cloudUserText.textContent='已登录：'+(cloudUser.email||'当前账号')+' · '+new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
+    setCloudText('自动同步已开启 · 最近上传 '+new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}));
   }catch(e){
     cloudStatus.textContent='同步失败';
+    setCloudText('同步失败：'+(e.message||e));
     if(showMessage)alert('云端同步失败：'+(e.message||e));
   }
 }
 async function pullCloudState(showMessage=false){
-  if(!cloud||!cloudUser)return;
+  const cfg=window.ROADTRIP_CLOUD_CONFIG||{};
+  if(!cloud||!cloudReady||!cfg.tripId)return;
   try{
-    cloudStatus.textContent='读取云端…';
-    const {data,error}=await cloud.from(CLOUD_TABLE).select('state,updated_at').eq('user_id',cloudUser.id).maybeSingle();
+    cloudStatus.textContent='检查更新…';
+    const {data,error}=await cloud.from(CLOUD_TABLE).select('state,updated_at').eq('trip_id',cfg.tripId).maybeSingle();
     if(error)throw error;
     if(!data||!data.state){
       await pushCloudState(false);
-      cloudStatus.textContent='已同步';
       return;
     }
     const remote=data.state;
@@ -162,68 +166,42 @@ async function pullCloudState(showMessage=false){
       cloudApplying=false;
       render();
       focusTarget();
+      cloudStatus.textContent='已更新';
+      setCloudText('已从云端更新 · '+new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}));
     }else if(localTs>remoteTs){
       await pushCloudState(false);
+    }else{
+      cloudStatus.textContent='已同步';
+      setCloudText('自动同步已开启 · 当前已是最新');
     }
-    cloudStatus.textContent='已同步';
     if(showMessage)alert('同步完成。');
   }catch(e){
     cloudStatus.textContent='同步失败';
+    setCloudText('同步失败：'+(e.message||e));
     if(showMessage)alert('云端同步失败：'+(e.message||e));
   }
 }
 async function initCloud(){
   const cfg=window.ROADTRIP_CLOUD_CONFIG||{};
   const lib=window.supabase;
-  if(!cfg.url||!cfg.publishableKey||!lib||!lib.createClient){
+  if(!cfg.url||!cfg.publishableKey||!cfg.tripId||!lib||!lib.createClient){
     cloudStatus.textContent='待配置';
-    cloudUserText.textContent='云同步程序已就绪，还需要配置 Supabase 项目。';
+    setCloudText('云同步配置不完整。');
     return;
   }
-  cloud=lib.createClient(cfg.url,cfg.publishableKey,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
-  const {data:{session}}=await cloud.auth.getSession();
-  cloudUser=session&&session.user?session.user:null;
-  updateCloudUI();
-  if(cloudUser)await pullCloudState(false);
-  cloud.auth.onAuthStateChange(async(_event,session2)=>{
-    cloudUser=session2&&session2.user?session2.user:null;
-    updateCloudUI();
-    if(cloudUser)setTimeout(()=>pullCloudState(false),0);
-  });
-}
-function updateCloudUI(){
-  const loginBtn=document.getElementById('cloudLoginBtn');
-  const syncBtn=document.getElementById('cloudSyncBtn');
-  const logoutBtn=document.getElementById('cloudLogoutBtn');
-  const ready=!!cloud;
-  loginBtn.disabled=!ready||!!cloudUser;
-  syncBtn.disabled=!ready||!cloudUser;
-  logoutBtn.disabled=!ready||!cloudUser;
-  if(!ready)return;
-  if(cloudUser){
-    cloudStatus.textContent='已登录';
-    cloudUserText.textContent='已登录：'+(cloudUser.email||'当前账号');
-  }else{
-    cloudStatus.textContent='未登录';
-    cloudUserText.textContent='在每台设备用同一个邮箱登录，即可同步同一份行程。';
+  try{
+    cloud=lib.createClient(cfg.url,cfg.publishableKey,{auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false}});
+    cloudReady=true;
+    cloudStatus.textContent='连接中…';
+    setCloudText('无需登录，正在读取云端行程…');
+    await pullCloudState(false);
+    clearInterval(cloudPollTimer);
+    cloudPollTimer=setInterval(()=>pullCloudState(false),15000);
+  }catch(e){
+    cloudReady=false;
+    cloudStatus.textContent='连接失败';
+    setCloudText('云端连接失败：'+(e.message||e));
   }
-}
-async function sendMagicLink(){
-  if(!cloud){alert('云同步还没配置 Supabase 项目。');return}
-  const email=document.getElementById('cloudEmail').value.trim();
-  if(!email){alert('请输入登录邮箱。');return}
-  cloudStatus.textContent='发送中…';
-  const redirectTo=location.origin+location.pathname;
-  const {error}=await cloud.auth.signInWithOtp({email,options:{emailRedirectTo:redirectTo}});
-  if(error){cloudStatus.textContent='发送失败';alert('发送登录链接失败：'+error.message);return}
-  cloudStatus.textContent='已发送';
-  alert('登录链接已发到邮箱。打开邮件里的链接后，会自动回到这个行程页面。');
-}
-async function cloudLogout(){
-  if(!cloud)return;
-  await cloud.auth.signOut();
-  cloudUser=null;
-  updateCloudUI();
 }
 function esc(s=''){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}function stamp(){return new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false})}function validCoord(s){const lon=Number(s.lon),lat=Number(s.lat);return Number.isFinite(lon)&&Number.isFinite(lat)&&lon>=70&&lon<=140&&lat>=0&&lat<=60}function selectedStop(){return state.stops[state.selected]||null}
 function render(){timeline.innerHTML='';state.stops.forEach((s,i)=>{const el=document.createElement('article');el.className='stop'+(state.times[i]&&i!==state.current?' done':'')+(state.times[i]&&i===state.current?' now':'');el.dataset.i=i;const exact=validCoord(s);el.innerHTML=`<div class="stop-top"><span class="dot"></span><div class="stop-main"><div class="name-row"><div class="name">${esc(s.name)}</div><div class="time">${esc(s.plan||'')}</div></div><div class="sub"><span class="pill">${esc(s.type||'目标')}</span>${exact?' · '+Number(s.lon).toFixed(5)+', '+Number(s.lat).toFixed(5):' · 位置待设置'}${s.approx?' · 城市中心约点':''}</div>${s.note?`<div class="sub">${esc(s.note)}</div>`:''}${state.times[i]?`<div class="actual">实际到达：${esc(state.times[i])}</div>`:''}</div></div><div class="card-actions"><button class="btn select" type="button">设为目标</button><button class="btn editBtn" type="button">编辑</button><button class="btn navBtn" type="button">一键高德</button><button class="btn searchBtn" type="button">高德搜索</button><button class="btn markBtn" type="button">${state.times[i]?'取消到达':'我到这了'}</button><button class="btn moreBtn" type="button">↑↓ 删除</button></div><div class="edit"><div class="form-grid"><div class="field full"><label>目标名称</label><input class="f-name" value="${esc(s.name)}"></div><div class="field"><label>类型</label><input class="f-type" value="${esc(s.type||'')}"></div><div class="field"><label>计划时间</label><input class="f-plan" value="${esc(s.plan||'')}"></div><div class="field full"><label>地点定位</label><div class="sub">不用填经纬度。点下面“高德搜索选地点”，搜索酒店/夜宵/充电站后直接选择。</div></div><div class="field full"><label>备注</label><textarea class="f-note">${esc(s.note||'')}</textarea></div></div><div class="edit-actions"><button class="btn primary saveEdit" type="button">保存修改</button><button class="btn amapPoiBtn" type="button">高德搜索选地点</button><button class="btn useMapPick" type="button">在地图上点位置</button><button class="btn danger clearLocationBtn" type="button">清除此地点位置</button><button class="btn upBtn" type="button">上移</button><button class="btn downBtn" type="button">下移</button><button class="btn danger deleteBtn" type="button">删除此目标</button><button class="btn cancelEdit" type="button">收起</button></div></div>`;timeline.appendChild(el);el.querySelector('.select').addEventListener('click',()=>{state.selected=i;save();render();focusTarget()});el.querySelector('.editBtn').addEventListener('click',()=>el.classList.toggle('editing'));el.querySelector('.cancelEdit').addEventListener('click',()=>el.classList.remove('editing'));el.querySelector('.navBtn').addEventListener('click',()=>openNav(i));el.querySelector('.searchBtn').addEventListener('click',()=>openAmapSearch(i));el.querySelector('.markBtn').addEventListener('click',()=>{if(state.times[i])unmarkHere(i);else markHere(i)});el.querySelector('.moreBtn').addEventListener('click',()=>el.classList.add('editing'));el.querySelector('.amapPoiBtn').addEventListener('click',()=>searchPlaceForStop(i));el.querySelector('.useMapPick').addEventListener('click',()=>beginPick(i));el.querySelector('.clearLocationBtn').addEventListener('click',()=>clearLocation(i));el.querySelector('.saveEdit').addEventListener('click',()=>saveEdit(el,i));el.querySelector('.upBtn').addEventListener('click',()=>move(i,-1));el.querySelector('.downBtn').addEventListener('click',()=>move(i,1));el.querySelector('.deleteBtn').addEventListener('click',()=>removeStop(i))});const done=Object.keys(state.times).length,pct=state.stops.length?Math.round(done/state.stops.length*100):0;progressText.textContent=pct+'%';progressBar.style.width=pct+'%';const s=selectedStop();targetStatus.textContent='🎯 当前目标：'+(s?s.name:'未选择');document.getElementById('currentNavBtn').disabled=!s;refreshMarkers()}
@@ -280,7 +258,7 @@ function startLive(){if(!navigator.geolocation){alert('当前浏览器不支持�
 function drawRoute(){if(!map||!A){alert('请先加载高德地图。');return}const s=selectedStop();if(!s||!validCoord(s)){alert('当前目标还没有准确经纬度。');return}if(!currentPos){alert('请先开启实时定位。');return}if(driving){try{driving.clear()}catch(e){}}driving=new A.Driving({map:map,hideMarkers:false,policy:A.DrivingPolicy?A.DrivingPolicy.LEAST_TIME:0});driving.search([currentPos.lon,currentPos.lat],[Number(s.lon),Number(s.lat)],(status)=>{if(status!=='complete')alert('路线规划失败，可直接点“高德导航”调用高德 App。')})}
 function openPoiSearch(){if(!map||!A){alert('请先加载高德地图。');return}searchBox.classList.add('open');document.getElementById('poiKeyword').focus()}function doPoiSearch(){const kw=document.getElementById('poiKeyword').value.trim();if(!kw||poiBusy)return;poiBusy=true;const btn=document.getElementById('poiSearchBtn');btn.disabled=true;btn.textContent='搜索中…';poiResults.innerHTML='<div class="sub">搜索中…</div>';A.plugin(['AMap.PlaceSearch'],()=>{const ps=new A.PlaceSearch({pageSize:8,pageIndex:1,citylimit:false});ps.search(kw,(status,res)=>{poiBusy=false;btn.disabled=false;btn.textContent='搜索';const pois=(res&&res.poiList&&res.poiList.pois)||[];poiResults.innerHTML='';if(status!=='complete'||!pois.length){poiResults.innerHTML='<div class="sub">没有找到结果，试试更完整的店名或地址。</div>';return}pois.forEach(p=>{const b=document.createElement('button');b.className='result';b.type='button';const loc=p.location;b.innerHTML=`${esc(p.name)}<small>${esc(p.address||p.district||'')}</small>`;b.addEventListener('click',()=>{const s=selectedStop();if(!s||!loc)return;s.name=p.name;s.lon=Number(loc.lng).toFixed(6);s.lat=Number(loc.lat).toFixed(6);s.approx=false;save();render();searchBox.classList.remove('open');focusTarget()});poiResults.appendChild(b)})})})}
 function exportTrip(){const blob=new Blob([JSON.stringify(state,null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='义乌到深圳_自驾行程备份.json';document.body.appendChild(a);a.click();const u=a.href;a.remove();setTimeout(()=>URL.revokeObjectURL(u),500)}
-document.getElementById('settingsToggle').addEventListener('click',()=>{if(window.ROADTRIP_AMAP_CONFIG&&window.ROADTRIP_AMAP_CONFIG.key)return;document.getElementById('settings').classList.toggle('open')});document.getElementById('oneTapAmapBtn').addEventListener('click',()=>{if(state.selected>=0)openNav(state.selected)});document.getElementById('clearTargetLocationBtn').addEventListener('click',()=>{if(state.selected>=0)clearLocation(state.selected)});document.getElementById('loadMapBtn').addEventListener('click',()=>{if(window.ROADTRIP_AMAP_CONFIG&&window.ROADTRIP_AMAP_CONFIG.key){alert('高德配置已内置到 config.js，无需重复保存。');return}const key=document.getElementById('amapKey').value.trim(),code=document.getElementById('amapCode').value.trim();if(!key||!code){alert('请同时填写 Web端(JS API) Key 和 securityJsCode。');return}localStorage.setItem(AMAP_STORE,JSON.stringify({key,code}));alert('已保存。页面将重新加载。');location.reload()});document.getElementById('clearMapKeyBtn').addEventListener('click',()=>{localStorage.removeItem(AMAP_STORE);location.reload()});document.getElementById('locateBtn').addEventListener('click',startLive);document.getElementById('fitBtn').addEventListener('click',fitAll);document.getElementById('routeBtn').addEventListener('click',drawRoute);document.getElementById('pickBtn').addEventListener('click',()=>beginPick(state.selected));document.getElementById('poiSearchBtn').addEventListener('click',doPoiSearch);document.getElementById('poiKeyword').addEventListener('keydown',e=>{if(e.key==='Enter')doPoiSearch()});document.getElementById('addBtn').addEventListener('click',addStop);document.getElementById('nextBtn').addEventListener('click',()=>{let i=Math.max(0,state.current+1);while(i<state.stops.length&&state.times[i])i++;if(i>=state.stops.length)i=state.stops.findIndex((_,idx)=>!state.times[idx]);if(i>=0)markHere(i)});document.getElementById('currentNavBtn').addEventListener('click',()=>{if(state.selected>=0)openNav(state.selected)});document.getElementById('exportBtn').addEventListener('click',exportTrip);document.getElementById('cloudLoginBtn').addEventListener('click',sendMagicLink);document.getElementById('cloudSyncBtn').addEventListener('click',()=>pullCloudState(true));document.getElementById('cloudLogoutBtn').addEventListener('click',cloudLogout);window.addEventListener('focus',()=>{if(cloudUser)pullCloudState(false)});document.addEventListener('visibilitychange',()=>{if(!document.hidden&&cloudUser)pullCloudState(false)});targetStatus.addEventListener('click',openPoiSearch);targetStatus.style.cursor='pointer';targetStatus.title='点这里搜索高德 POI';render();loadAMap();initCloud();
+document.getElementById('settingsToggle').addEventListener('click',()=>{if(window.ROADTRIP_AMAP_CONFIG&&window.ROADTRIP_AMAP_CONFIG.key)return;document.getElementById('settings').classList.toggle('open')});document.getElementById('oneTapAmapBtn').addEventListener('click',()=>{if(state.selected>=0)openNav(state.selected)});document.getElementById('clearTargetLocationBtn').addEventListener('click',()=>{if(state.selected>=0)clearLocation(state.selected)});document.getElementById('loadMapBtn').addEventListener('click',()=>{if(window.ROADTRIP_AMAP_CONFIG&&window.ROADTRIP_AMAP_CONFIG.key){alert('高德配置已内置到 config.js，无需重复保存。');return}const key=document.getElementById('amapKey').value.trim(),code=document.getElementById('amapCode').value.trim();if(!key||!code){alert('请同时填写 Web端(JS API) Key 和 securityJsCode。');return}localStorage.setItem(AMAP_STORE,JSON.stringify({key,code}));alert('已保存。页面将重新加载。');location.reload()});document.getElementById('clearMapKeyBtn').addEventListener('click',()=>{localStorage.removeItem(AMAP_STORE);location.reload()});document.getElementById('locateBtn').addEventListener('click',startLive);document.getElementById('fitBtn').addEventListener('click',fitAll);document.getElementById('routeBtn').addEventListener('click',drawRoute);document.getElementById('pickBtn').addEventListener('click',()=>beginPick(state.selected));document.getElementById('poiSearchBtn').addEventListener('click',doPoiSearch);document.getElementById('poiKeyword').addEventListener('keydown',e=>{if(e.key==='Enter')doPoiSearch()});document.getElementById('addBtn').addEventListener('click',addStop);document.getElementById('nextBtn').addEventListener('click',()=>{let i=Math.max(0,state.current+1);while(i<state.stops.length&&state.times[i])i++;if(i>=state.stops.length)i=state.stops.findIndex((_,idx)=>!state.times[idx]);if(i>=0)markHere(i)});document.getElementById('currentNavBtn').addEventListener('click',()=>{if(state.selected>=0)openNav(state.selected)});document.getElementById('exportBtn').addEventListener('click',exportTrip);document.getElementById('cloudSyncBtn').addEventListener('click',()=>pullCloudState(true));window.addEventListener('focus',()=>{if(cloudReady)pullCloudState(false)});document.addEventListener('visibilitychange',()=>{if(!document.hidden&&cloudReady)pullCloudState(false)});window.addEventListener('online',()=>{if(cloudReady)pullCloudState(false)});targetStatus.addEventListener('click',openPoiSearch);targetStatus.style.cursor='pointer';targetStatus.title='点这里搜索高德 POI';render();loadAMap();initCloud();
 })();
 </script>
 
