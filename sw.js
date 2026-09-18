@@ -1,8 +1,9 @@
-const CACHE = 'model3-roadtrip-pwa-v2';
+const CACHE = 'model3-roadtrip-pwa-v3';
 const CORE = [
   './',
   './index.html',
   './manifest.webmanifest',
+  './config.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/apple-touch-icon.png'
